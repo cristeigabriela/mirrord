@@ -28,9 +28,11 @@ use std::env::temp_dir;
 #[cfg(target_os = "macos")]
 use mac::temp_dir;
 
-/// Extract to given directory, or tmp by default.
-/// If prefix is true, add a random prefix to the file name that identifies the specific build
-/// of the layer. This is useful for debug purposes usually.
+/// Extract the layer to `dest_dir`, or a temp dir by default.
+///
+/// The file name is keyed by build metadata (crate version + byte length) so that a newer
+/// mirrord binary never reuses a stale layer that a previous build left in temp. When `prefix`
+/// is true, a per-build random prefix is used instead (unique per build, handy for debugging).
 pub(crate) fn extract_library<P>(
     dest_dir: Option<String>,
     progress: &P,
@@ -45,11 +47,20 @@ where
         .unwrap()
         .to_str()
         .unwrap();
+    let bytes = include_bytes!(env!("MIRRORD_LAYER_FILE"));
 
     let file_name = if prefix {
         format!("{}-libmirrord_layer.{extension}", const_random!(u64))
     } else {
-        format!("libmirrord_layer.{extension}")
+        // Key the extracted layer by build metadata (crate version + byte length) so a newer
+        // mirrord binary never reuses a stale layer that a previous build left in temp. It's a
+        // cheap metadata check — no hashing the ~20 MB payload — and each build gets its own
+        // file, so we never overwrite a copy a running session may have loaded.
+        format!(
+            "libmirrord_layer-{}-{}.{extension}",
+            env!("CARGO_PKG_VERSION"),
+            bytes.len()
+        )
     };
 
     let file_path = match dest_dir {
@@ -67,7 +78,6 @@ where
     if !file_path.exists() {
         let mut file = File::create(&file_path)
             .map_err(|e| CliError::LayerExtractError(file_path.clone(), e))?;
-        let bytes = include_bytes!(env!("MIRRORD_LAYER_FILE"));
         file.write_all(bytes).unwrap();
         debug!("Extracted library file to {:?}", &file_path);
     }
